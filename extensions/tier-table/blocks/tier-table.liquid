@@ -1,0 +1,157 @@
+{%- assign wlp_rules = shop.metafields.wholesale_lp.rules.value -%}
+{%- if wlp_rules != blank and product -%}
+<div class="wlp" id="wlp-{{ block.id }}" hidden>
+  {%- if block.settings.heading != blank -%}
+    <p class="wlp__heading">{{ block.settings.heading }}</p>
+  {%- endif -%}
+  <table class="wlp__table">
+    <thead><tr><th>Quantity</th><th>Price each</th><th>You save</th></tr></thead>
+    <tbody></tbody>
+  </table>
+  <p class="wlp__note" hidden>Quantities combine across eligible products.</p>
+</div>
+
+<script type="application/json" id="wlp-data-{{ block.id }}">
+{
+  "rules": {{ wlp_rules | json }},
+  "loggedIn": {% if customer %}true{% else %}false{% endif %},
+  "customerId": {% if customer %}"gid://shopify/Customer/{{ customer.id }}"{% else %}null{% endif %},
+  "customerTags": {% if customer %}{{ customer.tags | json }}{% else %}[]{% endif %},
+  "productId": "gid://shopify/Product/{{ product.id }}",
+  "collectionIds": [{% for c in product.collections %}"gid://shopify/Collection/{{ c.id }}"{% unless forloop.last %},{% endunless %}{% endfor %}],
+  "variants": { {% for v in product.variants %}"{{ v.id }}": {{ v.price }}{% unless forloop.last %},{% endunless %}{% endfor %} },
+  "currentVariant": "{{ product.selected_or_first_available_variant.id }}",
+  "moneyFormat": {{ shop.money_format | json }}
+}
+</script>
+
+<script>
+(function () {
+  var root = document.getElementById('wlp-{{ block.id }}');
+  var d = JSON.parse(document.getElementById('wlp-data-{{ block.id }}').textContent);
+  var tags = (d.customerTags || []).map(function (t) { return String(t).toLowerCase(); });
+  var cols = d.collectionIds || [];
+
+  var all = Array.isArray(d.rules) ? d.rules : [];
+  function hasAnyTag(list) { return (list || []).some(function (t) { return tags.indexOf(String(t).toLowerCase()) > -1; }); }
+  function customerOk(r) {
+    if (r.kind === 'special') {
+      if (!d.loggedIn) return false;
+      return (r.customers || []).some(function (c) { return c.id === d.customerId; }) || hasAnyTag(r.tags);
+    }
+    if (r.group === 'all') return true;
+    if (r.group === 'guest') return !d.loggedIn;
+    if (r.group === 'logged_in') return d.loggedIn;
+    if (r.group === 'tagged') return d.loggedIn && hasAnyTag(r.tags);
+    return false;
+  }
+
+  var rules = all.filter(function (r) {
+    if (!r.enabled || !r.tiers || !r.tiers.length) return false;
+    if (!customerOk(r)) return false;
+    if (r.scope === 'all') return true;
+    if (r.scope === 'products') return (r.products || []).some(function (p) { return p.id === d.productId; });
+    if (r.scope === 'collections') return (r.collections || []).some(function (c) { return cols.indexOf(c.id) > -1; });
+    return false;
+  });
+  if (!rules.length) return;
+
+  function tierFor(r, q) {
+    var best = null;
+    r.tiers.forEach(function (t) {
+      var m = Number(t.minQty) || 1;
+      if (q >= m && (!best || m > Number(best.minQty))) best = t;
+    });
+    return best;
+  }
+  function unit(price, t) {
+    var v = Number(t.value) || 0;
+    if (t.type === 'percent') return price * (1 - v / 100);
+    if (t.type === 'fixed_off') return price - v;
+    if (t.type === 'fixed_price') return v;
+    return price;
+  }
+  function money(cents) {
+    var amt = (cents / 100);
+    var fmt = d.moneyFormat;
+    if (!fmt) return '$' + amt.toFixed(2);
+    return fmt.replace(/\{\{\s*(\w+)\s*\}\}/, function (_, k) {
+      if (k === 'amount_no_decimals') return Math.round(amt).toLocaleString('en-US');
+      if (k === 'amount_with_comma_separator') return amt.toFixed(2).replace('.', ',');
+      return amt.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+    });
+  }
+
+  var points = [1];
+  rules.forEach(function (r) { r.tiers.forEach(function (t) { var m = Number(t.minQty) || 1; if (points.indexOf(m) < 0) points.push(m); }); });
+  points.sort(function (a, b) { return a - b; });
+
+  function render(variantId) {
+    var base = d.variants[variantId] || d.variants[d.currentVariant];
+    var rows = [];
+    points.forEach(function (q, i) {
+      var best = { special: null, common: null };
+      rules.forEach(function (r) {
+        var t = tierFor(r, q);
+        if (!t) return;
+        var lvl = r.kind === 'special' ? 'special' : 'common';
+        var u = Math.max(0, unit(base / 100, t) * 100);
+        if (best[lvl] === null || u < best[lvl]) best[lvl] = u;
+      });
+      var low = best.special !== null ? best.special : (best.common !== null ? best.common : base);
+      low = Math.min(low, base);
+      low = Math.round(low);
+      var next = points[i + 1];
+      rows.push({ start: q, end: next ? next - 1 : null, price: low, save: base - low });
+    });
+    var merged = [];
+    rows.forEach(function (r) {
+      var last = merged[merged.length - 1];
+      if (last && last.price === r.price) last.end = r.end;
+      else merged.push(Object.assign({}, r));
+    });
+    merged.forEach(function (r) {
+      r.label = r.end === null ? r.start + '+' : (r.start === r.end ? r.start : r.start + '–' + r.end);
+    });
+    if (!merged.some(function (r) { return r.save > 0; })) { root.hidden = true; return; }
+    root.querySelector('tbody').innerHTML = merged.map(function (r) {
+      var pct = base ? Math.round((r.save / base) * 100) : 0;
+      return '<tr><td>' + r.label + '</td><td>' + money(r.price) + '</td><td>' +
+        (r.save > 0 ? money(r.save) + ' (' + pct + '%)' : '—') + '</td></tr>';
+    }).join('');
+    root.querySelector('.wlp__note').hidden = !rules.some(function (r) { return r.countMode !== 'product' && r.scope !== 'products'; });
+    root.hidden = false;
+  }
+
+  render(d.currentVariant);
+  document.addEventListener('change', function (e) {
+    var form = e.target.closest && e.target.closest('form[action*="/cart/add"]');
+    if (!form) return;
+    setTimeout(function () {
+      var id = form.querySelector('[name="id"]');
+      if (id) render(id.value);
+    }, 50);
+  });
+})();
+</script>
+
+<style>
+  #wlp-{{ block.id }} { margin: 1rem 0; }
+  #wlp-{{ block.id }} .wlp__heading { font-weight: 600; margin: 0 0 .5rem; }
+  #wlp-{{ block.id }} .wlp__table { width: 100%; border-collapse: collapse; font-size: .95em; }
+  #wlp-{{ block.id }} th, #wlp-{{ block.id }} td { text-align: left; padding: .5rem .6rem; border-bottom: 1px solid rgba(var(--color-foreground, 0,0,0), .12); }
+  #wlp-{{ block.id }} th { font-weight: 600; }
+  #wlp-{{ block.id }} .wlp__note { font-size: .85em; opacity: .75; margin: .4rem 0 0; }
+</style>
+{%- endif -%}
+
+{% schema %}
+{
+  "name": "Wholesale tier table",
+  "target": "section",
+  "enabled_on": { "templates": ["product"] },
+  "settings": [
+    { "type": "text", "id": "heading", "label": "Heading", "default": "Buy more, save more" }
+  ]
+}
+{% endschema %}

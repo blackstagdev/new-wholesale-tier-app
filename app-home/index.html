@@ -1,0 +1,423 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<!-- Replace with the app's Client ID (Dev Dashboard → app → Settings) -->
+<meta name="shopify-api-key" content="YOUR_CLIENT_ID">
+<script src="https://cdn.shopify.com/shopifycloud/app-bridge.js"></script>
+<title>Pricing</title>
+<style>
+  :root { --bg:#f1f1f1; --card:#fff; --line:#e3e3e3; --text:#303030; --muted:#616161; --green:#29845a; --red:#c70a24; --btn:#303030; }
+  * { box-sizing: border-box; }
+  body { margin:0; background:var(--bg); color:var(--text); font:14px/1.45 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif; }
+  .wrap { max-width:980px; margin:0 auto; padding:20px 16px 60px; }
+  h1 { font-size:20px; margin:0; }
+  h2 { font-size:15px; margin:0 0 10px; }
+  .muted { color:var(--muted); }
+  .bar { display:flex; justify-content:space-between; align-items:center; gap:12px; margin-bottom:14px; flex-wrap:wrap; }
+  .tabs { display:flex; gap:4px; background:#e3e3e3; padding:3px; border-radius:9px; }
+  .tab { border:0; background:transparent; padding:7px 14px; border-radius:7px; cursor:pointer; font:inherit; color:var(--muted); }
+  .tab.on { background:#fff; color:var(--text); font-weight:600; box-shadow:0 1px 2px rgba(0,0,0,.12); }
+  .card { background:var(--card); border-radius:12px; box-shadow:0 1px 0 rgba(0,0,0,.07), 0 0 0 1px rgba(0,0,0,.04); padding:16px; margin-bottom:12px; }
+  .help { font-size:13px; color:var(--muted); margin:0 0 12px; }
+  .rule { display:grid; grid-template-columns:1fr auto; gap:12px; align-items:center; padding:12px 0; border-top:1px solid var(--line); }
+  .rule:first-of-type { border-top:0; }
+  .rule .meta { font-size:13px; color:var(--muted); margin-top:2px; }
+  .badge { display:inline-block; font-size:12px; padding:1px 8px; border-radius:8px; background:#e3e3e3; margin-left:6px; }
+  .badge.on { background:#cdfee1; color:#0c5132; }
+  .actions { display:flex; gap:6px; flex-wrap:wrap; justify-content:flex-end; }
+  button { font:inherit; }
+  .b { border:0; box-shadow:inset 0 -1px 0 #b5b5b5, 0 0 0 1px #d4d4d4; background:#fff; padding:6px 12px; border-radius:8px; cursor:pointer; }
+  .b:hover { background:#f7f7f7; }
+  .b.p { background:var(--btn); color:#fff; box-shadow:none; }
+  .b.p:hover { background:#1a1a1a; }
+  .b.d { color:var(--red); }
+  .b:disabled { opacity:.5; cursor:default; }
+  .b:focus-visible, .tab:focus-visible, input:focus-visible, select:focus-visible { outline:2px solid #005bd3; outline-offset:1px; }
+  label.f { display:flex; flex-direction:column; gap:4px; font-size:13px; flex:1; min-width:200px; }
+  input[type=text], input[type=number], select { padding:7px 9px; border:1px solid #8a8a8a; border-radius:8px; font:inherit; background:#fff; }
+  .row { display:flex; gap:12px; flex-wrap:wrap; margin-bottom:12px; align-items:flex-end; }
+  .opts { display:grid; gap:8px; }
+  .opt { display:flex; gap:10px; align-items:flex-start; border:1px solid var(--line); border-radius:10px; padding:10px 12px; cursor:pointer; }
+  .opt.on { border-color:#303030; box-shadow:0 0 0 1px #303030; }
+  .opt small { display:block; color:var(--muted); }
+  .chips { display:flex; gap:6px; flex-wrap:wrap; margin-top:8px; }
+  .chip { background:#ebebeb; border-radius:8px; padding:3px 4px 3px 10px; font-size:13px; display:inline-flex; align-items:center; gap:4px; }
+  .chip button { border:0; background:transparent; cursor:pointer; font-size:15px; line-height:1; padding:0 4px; color:var(--muted); }
+  table { width:100%; border-collapse:collapse; }
+  th { text-align:left; font-size:12px; color:var(--muted); font-weight:500; padding:4px 6px; }
+  td { padding:4px 6px; }
+  .results { border:1px solid var(--line); border-radius:8px; margin-top:6px; max-height:220px; overflow:auto; }
+  .results div { padding:8px 10px; border-top:1px solid var(--line); cursor:pointer; }
+  .results div:first-child { border-top:0; }
+  .results div:hover { background:#f7f7f7; }
+  .empty { text-align:center; padding:28px 12px; color:var(--muted); }
+  .check { display:flex; gap:8px; align-items:center; }
+</style>
+</head>
+<body>
+<ui-title-bar title="Pricing"></ui-title-bar>
+<div class="wrap" id="app"><p class="muted">Loading pricing…</p></div>
+
+<script>
+const API = 'shopify:admin/api/2025-07/graphql.json';
+const NS = 'wholesale_lp';
+const DISCOUNT_TITLE = 'Wholesale pricing';
+
+const state = {
+  rules: [], settings: { stackable: false }, discountId: null,
+  tab: 'common', draft: null, saving: false, loaded: false,
+};
+
+const GROUPS = [
+  ['tagged', 'Tagged customers', 'Only logged-in customers with a matching tag.'],
+  ['logged_in', 'Logged-in customers', 'All logged-in customers with any or no tag.'],
+  ['guest', 'Guest customers', 'Visitors browsing without logging in.'],
+  ['all', 'All customers', 'Everyone, logged in or not.'],
+];
+const TIER_TYPES = [['percent', '% off'], ['fixed_off', 'Amount off each'], ['fixed_price', 'Fixed price each']];
+
+const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;' }[c]));
+const uniq = (a) => [...new Set(a)];
+const uid = () => Math.random().toString(36).slice(2, 9) + Date.now().toString(36);
+const toast = (m, err) => window.shopify?.toast?.show(m, err ? { isError: true } : undefined);
+
+async function gql(query, variables) {
+  const r = await fetch(API, { method: 'POST', body: JSON.stringify({ query, variables }) });
+  const j = await r.json();
+  if (j.errors) throw new Error(j.errors.map((e) => e.message).join('; '));
+  return j.data;
+}
+
+/* ---------- load / persist ---------- */
+
+async function load() {
+  try {
+    const d = await gql(`{ shop {
+      rules: metafield(namespace:"${NS}", key:"rules") { jsonValue }
+      settings: metafield(namespace:"${NS}", key:"settings") { jsonValue }
+      discountId: metafield(namespace:"${NS}", key:"discount_id") { value }
+    } }`);
+    state.rules = d.shop.rules?.jsonValue || [];
+    state.settings = d.shop.settings?.jsonValue || { stackable: false };
+    state.discountId = d.shop.discountId?.value || null;
+  } catch (e) { toast('Could not load pricing: ' + e.message, true); }
+  state.loaded = true;
+  render();
+}
+
+function combinesWith() {
+  const on = !!state.settings.stackable;
+  return { orderDiscounts: on, productDiscounts: on, shippingDiscounts: on };
+}
+
+async function syncDiscount(metafields) {
+  let id = state.discountId;
+  if (id) {
+    const d = await gql(`query($id:ID!){ automaticDiscountNode(id:$id){ id } }`, { id });
+    if (!d.automaticDiscountNode) id = null;
+  }
+  if (!id) {
+    const f = await gql(`{ shopifyFunctions(first:25){ nodes{ id apiType } } }`);
+    const fn = f.shopifyFunctions.nodes.find((x) => ['discount', 'product_discounts'].includes(x.apiType));
+    if (!fn) throw new Error('Discount function not found. Run shopify app deploy.');
+    const c = await gql(`mutation($d:DiscountAutomaticAppInput!){ discountAutomaticAppCreate(automaticAppDiscount:$d){
+      automaticAppDiscount{ discountId } userErrors{ message } } }`, {
+      d: { title: DISCOUNT_TITLE, functionId: fn.id, discountClasses: ['PRODUCT'],
+           startsAt: new Date().toISOString(), combinesWith: combinesWith(), metafields },
+    });
+    const e = c.discountAutomaticAppCreate.userErrors;
+    if (e.length) throw new Error(e.map((x) => x.message).join('; '));
+    return c.discountAutomaticAppCreate.automaticAppDiscount.discountId;
+  }
+  const u = await gql(`mutation($id:ID!,$d:DiscountAutomaticAppInput!){ discountAutomaticAppUpdate(id:$id, automaticAppDiscount:$d){
+    userErrors{ message } } }`, { id, d: { combinesWith: combinesWith() } });
+  if (u.discountAutomaticAppUpdate.userErrors.length)
+    throw new Error(u.discountAutomaticAppUpdate.userErrors.map((x) => x.message).join('; '));
+  await setMeta(metafields.map((m) => ({ ...m, ownerId: id })));
+  return id;
+}
+
+async function setMeta(m) {
+  const r = await gql(`mutation($m:[MetafieldsSetInput!]!){ metafieldsSet(metafields:$m){ userErrors{ message } } }`, { m });
+  if (r.metafieldsSet.userErrors.length) throw new Error(r.metafieldsSet.userErrors.map((x) => x.message).join('; '));
+}
+
+async function persist(msg) {
+  state.saving = true; render();
+  try {
+    const pub = state.rules.filter((r) => r.enabled);
+    const variables = {
+      customerTags: uniq(pub.flatMap((r) => r.tags || [])),
+      collectionIds: uniq(pub.flatMap((r) => r.scope === 'collections' ? r.collections.map((c) => c.id) : [])),
+    };
+    const rulesJson = JSON.stringify(state.rules);
+    state.discountId = await syncDiscount([
+      { namespace: '$app:wlp', key: 'rules', type: 'json', value: rulesJson },
+      { namespace: '$app:wlp', key: 'variables', type: 'json', value: JSON.stringify(variables) },
+    ]);
+    const { shop } = await gql(`{ shop { id } }`);
+    await setMeta([
+      { ownerId: shop.id, namespace: NS, key: 'rules', type: 'json', value: rulesJson },
+      { ownerId: shop.id, namespace: NS, key: 'settings', type: 'json', value: JSON.stringify(state.settings) },
+      { ownerId: shop.id, namespace: NS, key: 'discount_id', type: 'single_line_text_field', value: state.discountId },
+    ]);
+    toast(msg || 'Pricing saved');
+    state.saving = false; render();
+    return true;
+  } catch (e) {
+    toast(e.message, true);
+    state.saving = false; render();
+    return false;
+  }
+}
+
+/* ---------- rendering ---------- */
+
+function whoText(r) {
+  if (r.kind === 'special') {
+    const parts = [];
+    if (r.customers?.length) parts.push(r.customers.length === 1 ? r.customers[0].name : r.customers.length + ' customers');
+    if (r.tags?.length) parts.push('tags: ' + r.tags.join(', '));
+    return parts.join(' + ') || 'No customers';
+  }
+  const g = GROUPS.find((x) => x[0] === r.group);
+  return r.group === 'tagged' ? 'Tags: ' + (r.tags || []).join(', ') : (g ? g[1] : '');
+}
+function scopeText(r) {
+  if (r.scope === 'all') return 'All products';
+  const items = r.scope === 'collections' ? r.collections : r.products;
+  return items.length === 1 ? items[0].title : items.length + ' ' + r.scope;
+}
+function tierText(r) {
+  return r.tiers.map((t) => t.minQty + '+ ' + (t.type === 'percent' ? t.value + '% off'
+    : t.type === 'fixed_off' ? '$' + t.value + ' off' : '$' + t.value + ' each')).join(' · ');
+}
+
+function listView() {
+  const kind = state.tab;
+  const rules = state.rules.filter((r) => r.kind === kind);
+  const help = kind === 'common'
+    ? 'Pricing for groups of customers. If a Special pricing rule also applies, Special pricing wins. If several Common rules apply, the lowest price wins.'
+    : 'Pricing for specific customers or tags. Always takes priority over Common pricing. If several Special rules apply, the lowest price wins.';
+  return `
+  <div class="bar">
+    <div class="tabs" role="tablist">
+      <button class="tab ${kind === 'common' ? 'on' : ''}" data-a="tab" data-v="common" role="tab">Common pricing</button>
+      <button class="tab ${kind === 'special' ? 'on' : ''}" data-a="tab" data-v="special" role="tab">Special pricing</button>
+    </div>
+    <button class="b p" data-a="add" ${state.saving ? 'disabled' : ''}>Add ${kind} pricing</button>
+  </div>
+  <div class="card">
+    <p class="help">${help}</p>
+    ${rules.length ? rules.map((r) => `
+      <div class="rule">
+        <div>
+          <strong>${esc(r.name)}</strong><span class="badge ${r.enabled ? 'on' : ''}">${r.enabled ? 'Published' : 'Unpublished'}</span>
+          <div class="meta">${esc(whoText(r))} — ${esc(scopeText(r))}</div>
+          <div class="meta">${esc(tierText(r))}</div>
+        </div>
+        <div class="actions">
+          <button class="b" data-a="edit" data-id="${r.id}" ${state.saving ? 'disabled' : ''}>Edit</button>
+          <button class="b" data-a="toggle" data-id="${r.id}" ${state.saving ? 'disabled' : ''}>${r.enabled ? 'Unpublish' : 'Publish'}</button>
+          <button class="b d" data-a="del" data-id="${r.id}" ${state.saving ? 'disabled' : ''}>Delete</button>
+        </div>
+      </div>`).join('') : `<div class="empty">No ${kind} pricing yet. Add one to start.</div>`}
+  </div>
+  <div class="card">
+    <h2>Combining</h2>
+    <label class="check"><input type="checkbox" data-a="stack" ${state.settings.stackable ? 'checked' : ''} ${state.saving ? 'disabled' : ''}>
+      Allow wholesale pricing to combine with discount codes and other discounts</label>
+    <p class="help" style="margin:6px 0 0">Off by default. The discount code also needs combining turned on.</p>
+  </div>`;
+}
+
+function editorView() {
+  const r = state.draft;
+  const special = r.kind === 'special';
+  const items = r.scope === 'collections' ? r.collections : r.products;
+  return `
+  <div class="bar">
+    <h1>${r._new ? 'Add' : 'Edit'} ${special ? 'special' : 'common'} pricing</h1>
+    <div class="actions">
+      <button class="b" data-a="cancel">Cancel</button>
+      <button class="b p" data-a="save" ${state.saving ? 'disabled' : ''}>${state.saving ? 'Saving…' : 'Save'}</button>
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="row">
+      <label class="f">Name (shown at checkout)<input type="text" data-f="name" value="${esc(r.name)}"></label>
+    </div>
+    <label class="check"><input type="checkbox" data-f="enabled" ${r.enabled ? 'checked' : ''}> Published</label>
+  </div>
+
+  <div class="card">
+    <h2>Customers</h2>
+    ${special ? `
+      <label class="f">Specific customers
+        <input type="text" id="custq" placeholder="Search by name or email" autocomplete="off">
+      </label>
+      <div id="custres"></div>
+      <div class="chips">${(r.customers || []).map((c, i) => `<span class="chip">${esc(c.name)}<button data-a="rmCust" data-i="${i}" aria-label="Remove ${esc(c.name)}">×</button></span>`).join('')}</div>
+      <div class="row" style="margin-top:12px">
+        <label class="f">And/or customers with any of these tags (comma-separated)
+          <input type="text" data-f="tags" value="${esc((r.tags || []).join(', '))}"></label>
+      </div>` : `
+      <div class="opts">${GROUPS.map(([v, t, s]) => `
+        <label class="opt ${r.group === v ? 'on' : ''}">
+          <input type="radio" name="group" data-f="group" value="${v}" ${r.group === v ? 'checked' : ''}>
+          <span><strong>${t}</strong><small>${s}</small></span>
+        </label>`).join('')}</div>
+      ${r.group === 'tagged' ? `<div class="row" style="margin-top:12px">
+        <label class="f">Customer tags (comma-separated, any tag matches)
+          <input type="text" data-f="tags" value="${esc((r.tags || []).join(', '))}"></label></div>` : ''}`}
+  </div>
+
+  <div class="card">
+    <h2>Products</h2>
+    <div class="row">
+      <label class="f">Applies to
+        <select data-f="scope">
+          <option value="all" ${r.scope === 'all' ? 'selected' : ''}>All products</option>
+          <option value="collections" ${r.scope === 'collections' ? 'selected' : ''}>Specific collections</option>
+          <option value="products" ${r.scope === 'products' ? 'selected' : ''}>Specific products</option>
+        </select></label>
+      <label class="f">Count quantity
+        <select data-f="countMode">
+          <option value="mix" ${r.countMode === 'mix' ? 'selected' : ''}>Mix and match (eligible items combined)</option>
+          <option value="product" ${r.countMode === 'product' ? 'selected' : ''}>Per product</option>
+        </select></label>
+    </div>
+    ${r.scope !== 'all' ? `
+      <button class="b" data-a="pick">${items.length ? 'Edit' : 'Choose'} ${r.scope}</button>
+      <div class="chips">${items.map((x, i) => `<span class="chip">${esc(x.title)}<button data-a="rmItem" data-i="${i}" aria-label="Remove ${esc(x.title)}">×</button></span>`).join('')}</div>` : ''}
+  </div>
+
+  <div class="card">
+    <h2>Tiers</h2>
+    <table>
+      <thead><tr><th>Min quantity</th><th>Type</th><th>Value</th><th></th></tr></thead>
+      <tbody>${r.tiers.map((t, i) => `
+        <tr>
+          <td><input type="number" min="1" data-f="tier" data-i="${i}" data-k="minQty" value="${esc(t.minQty)}" style="width:100px"></td>
+          <td><select data-f="tier" data-i="${i}" data-k="type">${TIER_TYPES.map(([v, l]) => `<option value="${v}" ${t.type === v ? 'selected' : ''}>${l}</option>`).join('')}</select></td>
+          <td><input type="number" min="0" step="0.01" data-f="tier" data-i="${i}" data-k="value" value="${esc(t.value)}" style="width:110px"></td>
+          <td style="text-align:right"><button class="b" data-a="rmTier" data-i="${i}">Remove</button></td>
+        </tr>`).join('')}</tbody>
+    </table>
+    <button class="b" data-a="addTier" style="margin-top:8px">Add tier</button>
+  </div>`;
+}
+
+function render() {
+  const el = document.getElementById('app');
+  if (!state.loaded) return;
+  el.innerHTML = state.draft ? editorView() : listView();
+}
+
+/* ---------- editing ---------- */
+
+function newRule(kind) {
+  return {
+    id: uid(), _new: true, kind, name: kind === 'special' ? 'Special pricing' : 'Common pricing',
+    enabled: false, group: 'tagged', tags: [], customers: [],
+    scope: 'all', collections: [], products: [], countMode: 'mix',
+    tiers: [{ minQty: 1, type: 'percent', value: 10 }],
+  };
+}
+
+function validate(r) {
+  if (!r.name.trim()) return 'Add a name.';
+  if (r.kind === 'special' && !r.customers.length && !r.tags.length) return 'Add at least one customer or tag.';
+  if (r.kind === 'common' && r.group === 'tagged' && !r.tags.length) return 'Add at least one customer tag.';
+  if (r.scope !== 'all' && !(r.scope === 'collections' ? r.collections : r.products).length) return `Choose at least one ${r.scope === 'collections' ? 'collection' : 'product'}.`;
+  if (!r.tiers.length) return 'Add at least one tier.';
+  if (r.tiers.some((t) => !(Number(t.minQty) >= 1))) return 'Min quantity must be 1 or more.';
+  return null;
+}
+
+let searchTimer;
+async function searchCustomers(q) {
+  const box = document.getElementById('custres');
+  if (!box) return;
+  if (q.trim().length < 2) { box.innerHTML = ''; return; }
+  try {
+    const d = await gql(`query($q:String!){ customers(first:10, query:$q){ nodes{ id displayName email } } }`, { q });
+    const picked = new Set(state.draft.customers.map((c) => c.id));
+    const rows = d.customers.nodes.filter((c) => !picked.has(c.id));
+    box.innerHTML = rows.length ? `<div class="results">${rows.map((c) =>
+      `<div data-a="addCust" data-id="${c.id}" data-name="${esc(c.displayName || c.email)}">${esc(c.displayName)} <span class="muted">${esc(c.email || '')}</span></div>`).join('')}</div>`
+      : '<p class="help" style="margin-top:6px">No customers found.</p>';
+  } catch (e) { box.innerHTML = `<p class="help" style="margin-top:6px">${esc(e.message)}</p>`; }
+}
+
+document.addEventListener('input', (e) => {
+  const t = e.target;
+  if (t.id === 'custq') { clearTimeout(searchTimer); searchTimer = setTimeout(() => searchCustomers(t.value), 300); return; }
+  const f = t.dataset.f; if (!f || !state.draft) return;
+  const r = state.draft;
+  if (f === 'tier') { const v = t.dataset.k === 'type' ? t.value : Number(t.value); r.tiers[+t.dataset.i][t.dataset.k] = v; return; }
+  if (f === 'tags') { r.tags = t.value.split(',').map((x) => x.trim()).filter(Boolean); return; }
+  if (f === 'enabled') { r.enabled = t.checked; return; }
+  if (f === 'name') { r.name = t.value; return; }
+});
+
+document.addEventListener('change', (e) => {
+  const t = e.target;
+  if (t.dataset.a === 'stack') { state.settings.stackable = t.checked; persist(t.checked ? 'Combining turned on' : 'Combining turned off'); return; }
+  const f = t.dataset.f; if (!f || !state.draft) return;
+  if (f === 'group' || f === 'scope' || f === 'countMode') { state.draft[f] = t.value; if (f !== 'countMode') render(); }
+  if (f === 'tier' && t.dataset.k === 'type') state.draft.tiers[+t.dataset.i].type = t.value;
+  if (f === 'enabled') state.draft.enabled = t.checked;
+});
+
+document.addEventListener('click', async (e) => {
+  const el = e.target.closest('[data-a]'); if (!el) return;
+  const a = el.dataset.a, r = state.draft;
+  const find = (id) => state.rules.find((x) => x.id === id);
+
+  if (a === 'tab') { state.tab = el.dataset.v; render(); }
+  else if (a === 'add') { state.draft = newRule(state.tab); render(); }
+  else if (a === 'edit') { state.draft = JSON.parse(JSON.stringify(find(el.dataset.id))); render(); }
+  else if (a === 'cancel') { state.draft = null; render(); }
+  else if (a === 'toggle') {
+    const x = find(el.dataset.id); x.enabled = !x.enabled;
+    if (!(await persist(x.enabled ? 'Published' : 'Unpublished'))) x.enabled = !x.enabled, render();
+  }
+  else if (a === 'del') {
+    const x = find(el.dataset.id);
+    if (!confirm(`Delete "${x.name}"?`)) return;
+    const before = state.rules;
+    state.rules = state.rules.filter((y) => y.id !== x.id);
+    if (!(await persist('Deleted'))) { state.rules = before; render(); }
+  }
+  else if (a === 'save') {
+    const err = validate(r); if (err) { toast(err, true); return; }
+    const clean = { ...r }; delete clean._new;
+    if (clean.kind === 'common' && clean.group !== 'tagged') clean.tags = [];
+    if (clean.kind === 'common') clean.customers = [];
+    const before = state.rules;
+    const i = state.rules.findIndex((x) => x.id === clean.id);
+    state.rules = i > -1 ? state.rules.map((x, j) => (j === i ? clean : x)) : [...state.rules, clean];
+    if (await persist(clean.enabled ? 'Saved and published' : 'Saved')) { state.draft = null; render(); }
+    else state.rules = before;
+  }
+  else if (a === 'pick') {
+    const key = r.scope === 'collections' ? 'collections' : 'products';
+    const sel = await shopify.resourcePicker({ type: r.scope === 'collections' ? 'collection' : 'product', multiple: true,
+      selectionIds: r[key].map((x) => ({ id: x.id })) });
+    if (sel) { r[key] = sel.map((x) => ({ id: x.id, title: x.title })); render(); }
+  }
+  else if (a === 'rmItem') { const key = r.scope === 'collections' ? 'collections' : 'products'; r[key].splice(+el.dataset.i, 1); render(); }
+  else if (a === 'addCust') { r.customers.push({ id: el.dataset.id, name: el.dataset.name }); render(); }
+  else if (a === 'rmCust') { r.customers.splice(+el.dataset.i, 1); render(); }
+  else if (a === 'addTier') { r.tiers.push({ minQty: (Number(r.tiers.at(-1)?.minQty) || 0) + 1, type: 'percent', value: 0 }); render(); }
+  else if (a === 'rmTier') { r.tiers.splice(+el.dataset.i, 1); render(); }
+});
+
+load();
+</script>
+</body>
+</html>

@@ -1,0 +1,41 @@
+query CartInput($customerTags: [String!], $collectionIds: [ID!]) {
+  cart {
+    buyerIdentity {
+      customer {
+        id
+        hasTags(tags: $customerTags) {
+          tag
+          hasTag
+        }
+      }
+    }
+    lines {
+      id
+      quantity
+      cost {
+        amountPerQuantity {
+          amount
+        }
+      }
+      merchandise {
+        __typename
+        ... on ProductVariant {
+          id
+          product {
+            id
+            inCollections(ids: $collectionIds) {
+              collectionId
+              isMember
+            }
+          }
+        }
+      }
+    }
+  }
+  discount {
+    discountClasses
+    rules: metafield(namespace: "$app:wlp", key: "rules") {
+      jsonValue
+    }
+  }
+}
